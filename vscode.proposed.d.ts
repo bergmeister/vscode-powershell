@@ -96,7 +96,7 @@ declare module 'vscode' {
 
 	export interface NotebookCellMetadata {
 		/**
-		 * Controls if the content of a cell is editable or not.
+		 * Controls whether a cell's editor is editable/readonly.
 		 */
 		editable?: boolean;
 
@@ -160,11 +160,12 @@ declare module 'vscode' {
 	}
 
 	export interface NotebookCell {
+		readonly index: number;
 		readonly notebook: NotebookDocument;
 		readonly uri: Uri;
 		readonly cellKind: CellKind;
 		readonly document: TextDocument;
-		language: string;
+		readonly language: string;
 		outputs: CellOutput[];
 		metadata: NotebookCellMetadata;
 	}
@@ -215,13 +216,13 @@ declare module 'vscode' {
 
 	export interface NotebookDocument {
 		readonly uri: Uri;
+		readonly version: number;
 		readonly fileName: string;
 		readonly viewType: string;
 		readonly isDirty: boolean;
 		readonly isUntitled: boolean;
-		readonly cells: NotebookCell[];
+		readonly cells: ReadonlyArray<NotebookCell>;
 		languages: string[];
-		displayOrder?: GlobPattern[];
 		metadata: NotebookDocumentMetadata;
 	}
 
@@ -244,9 +245,42 @@ declare module 'vscode' {
 		contains(uri: Uri): boolean
 	}
 
-	export interface NotebookEditorCellEdit {
-		insert(index: number, content: string | string[], language: string, type: CellKind, outputs: CellOutput[], metadata: NotebookCellMetadata | undefined): void;
-		delete(index: number): void;
+	export interface WorkspaceEdit {
+		replaceNotebookMetadata(uri: Uri, value: NotebookDocumentMetadata): void;
+		replaceNotebookCells(uri: Uri, start: number, end: number, cells: NotebookCellData[], metadata?: WorkspaceEditEntryMetadata): void;
+		replaceNotebookCellOutput(uri: Uri, index: number, outputs: CellOutput[], metadata?: WorkspaceEditEntryMetadata): void;
+		replaceNotebookCellMetadata(uri: Uri, index: number, cellMetadata: NotebookCellMetadata, metadata?: WorkspaceEditEntryMetadata): void;
+	}
+
+	export interface NotebookEditorEdit {
+		replaceMetadata(value: NotebookDocumentMetadata): void;
+		replaceCells(start: number, end: number, cells: NotebookCellData[]): void;
+		replaceCellOutput(index: number, outputs: CellOutput[]): void;
+		replaceCellMetadata(index: number, metadata: NotebookCellMetadata): void;
+	}
+
+	export interface NotebookCellRange {
+		readonly start: number;
+		/**
+		 * exclusive
+		 */
+		readonly end: number;
+	}
+
+	export enum NotebookEditorRevealType {
+		/**
+		 * The range will be revealed with as little scrolling as possible.
+		 */
+		Default = 0,
+		/**
+		 * The range will always be revealed in the center of the viewport.
+		 */
+		InCenter = 1,
+		/**
+		 * If the range is outside the viewport, it will be revealed in the center of the viewport.
+		 * Otherwise, it will be revealed with as little scrolling as possible.
+		 */
+		InCenterIfOutsideViewport = 2,
 	}
 
 	export interface NotebookEditor {
@@ -260,10 +294,16 @@ declare module 'vscode' {
 		 */
 		readonly selection?: NotebookCell;
 
+
+		/**
+		 * The current visible ranges in the editor (vertically).
+		 */
+		readonly visibleRanges: NotebookCellRange[];
+
 		/**
 		 * The column in which this editor shows.
 		 */
-		viewColumn?: ViewColumn;
+		readonly viewColumn?: ViewColumn;
 
 		/**
 		 * Whether the panel is active (focused by the user).
@@ -303,7 +343,21 @@ declare module 'vscode' {
 		 */
 		asWebviewUri(localResource: Uri): Uri;
 
-		edit(callback: (editBuilder: NotebookEditorCellEdit) => void): Thenable<boolean>;
+		/**
+		 * Perform an edit on the notebook associated with this notebook editor.
+		 *
+		 * The given callback-function is invoked with an [edit-builder](#NotebookEditorEdit) which must
+		 * be used to make edits. Note that the edit-builder is only valid while the
+		 * callback executes.
+		 *
+		 * @param callback A function which can create edits using an [edit-builder](#NotebookEditorEdit).
+		 * @return A promise that resolves with a value indicating if the edits could be applied.
+		 */
+		edit(callback: (editBuilder: NotebookEditorEdit) => void): Thenable<boolean>;
+
+		setDecorations(decorationType: NotebookEditorDecorationType, range: NotebookCellRange): void;
+
+		revealRange(range: NotebookCellRange, revealType?: NotebookEditorRevealType): void;
 	}
 
 	export interface NotebookOutputSelector {
@@ -316,29 +370,8 @@ declare module 'vscode' {
 		outputId: string;
 	}
 
-	export interface NotebookOutputRenderer {
-		/**
-		 *
-		 * @returns HTML fragment. We can probably return `CellOutput` instead of string ?
-		 *
-		 */
-		render(document: NotebookDocument, request: NotebookRenderRequest): string;
-
-		/**
-		 * Call before HTML from the renderer is executed, and will be called for
-		 * every editor associated with notebook documents where the renderer
-		 * is or was used.
-		 *
-		 * The communication object will only send and receive messages to the
-		 * render API, retrieved via `acquireNotebookRendererApi`, acquired with
-		 * this specific renderer's ID.
-		 *
-		 * If you need to keep an association between the communication object
-		 * and the document for use in the `render()` method, you can use a WeakMap.
-		 */
-		resolveNotebook?(document: NotebookDocument, communication: NotebookCommunication): void;
-
-		readonly preloads?: Uri[];
+	export interface NotebookDocumentMetadataChangeEvent {
+		readonly document: NotebookDocument;
 	}
 
 	export interface NotebookCellsChangeData {
@@ -391,12 +424,22 @@ declare module 'vscode' {
 		readonly cell: NotebookCell;
 	}
 
+	export interface NotebookEditorSelectionChangeEvent {
+		readonly notebookEditor: NotebookEditor;
+		readonly selection?: NotebookCell;
+	}
+
+	export interface NotebookEditorVisibleRangesChangeEvent {
+		readonly notebookEditor: NotebookEditor;
+		readonly visibleRanges: ReadonlyArray<NotebookCellRange>;
+	}
+
 	export interface NotebookCellData {
 		readonly cellKind: CellKind;
 		readonly source: string;
-		language: string;
-		outputs: CellOutput[];
-		metadata: NotebookCellMetadata;
+		readonly language: string;
+		readonly outputs: CellOutput[];
+		readonly metadata: NotebookCellMetadata | undefined;
 	}
 
 	export interface NotebookData {
@@ -514,14 +557,13 @@ declare module 'vscode' {
 		saveNotebookAs(targetResource: Uri, document: NotebookDocument, cancellation: CancellationToken): Promise<void>;
 		readonly onDidChangeNotebook: Event<NotebookDocumentContentChangeEvent | NotebookDocumentEditEvent>;
 		backupNotebook(document: NotebookDocument, context: NotebookDocumentBackupContext, cancellation: CancellationToken): Promise<NotebookDocumentBackup>;
-
-		kernel?: NotebookKernel;
 	}
 
 	export interface NotebookKernel {
 		readonly id?: string;
 		label: string;
 		description?: string;
+		detail?: string;
 		isPreferred?: boolean;
 		preloads?: Uri[];
 		executeCell(document: NotebookDocument, cell: NotebookCell): void;
@@ -531,21 +573,78 @@ declare module 'vscode' {
 	}
 
 	export interface NotebookDocumentFilter {
-		viewType?: string;
-		filenamePattern?: GlobPattern;
-		excludeFileNamePattern?: GlobPattern;
+		viewType?: string | string[];
+		filenamePattern?: GlobPattern | { include: GlobPattern; exclude: GlobPattern };
 	}
 
 	export interface NotebookKernelProvider<T extends NotebookKernel = NotebookKernel> {
-		onDidChangeKernels?: Event<void>;
+		onDidChangeKernels?: Event<NotebookDocument | undefined>;
 		provideKernels(document: NotebookDocument, token: CancellationToken): ProviderResult<T[]>;
 		resolveKernel?(kernel: T, document: NotebookDocument, webview: NotebookCommunication, token: CancellationToken): ProviderResult<void>;
 	}
 
+	/**
+	 * Represents the alignment of status bar items.
+	 */
+	export enum NotebookCellStatusBarAlignment {
+
+		/**
+		 * Aligned to the left side.
+		 */
+		Left = 1,
+
+		/**
+		 * Aligned to the right side.
+		 */
+		Right = 2
+	}
+
+	export interface NotebookCellStatusBarItem {
+		readonly cell: NotebookCell;
+		readonly alignment: NotebookCellStatusBarAlignment;
+		readonly priority?: number;
+		text: string;
+		tooltip: string | undefined;
+		command: string | Command | undefined;
+		accessibilityInformation?: AccessibilityInformation;
+		show(): void;
+		hide(): void;
+		dispose(): void;
+	}
+
+	export interface NotebookDecorationRenderOptions {
+		backgroundColor?: string | ThemeColor;
+		borderColor?: string | ThemeColor;
+		top: ThemableDecorationAttachmentRenderOptions;
+	}
+
+	export interface NotebookEditorDecorationType {
+		readonly key: string;
+		dispose(): void;
+	}
+
+
 	export namespace notebook {
 		export function registerNotebookContentProvider(
 			notebookType: string,
-			provider: NotebookContentProvider
+			provider: NotebookContentProvider,
+			options?: {
+				/**
+				 * Controls if outputs change will trigger notebook document content change and if it will be used in the diff editor
+				 * Default to false. If the content provider doesn't persisit the outputs in the file document, this should be set to true.
+				 */
+				transientOutputs: boolean;
+				/**
+				 * Controls if a meetadata property change will trigger notebook document content change and if it will be used in the diff editor
+				 * Default to false. If the content provider doesn't persisit a metadata property in the file document, it should be set to true.
+				 */
+				transientMetadata: { [K in keyof NotebookCellMetadata]?: boolean };
+
+				/**
+				 * Not ready for production or development use yet.
+				 */
+				viewOptions?: { displayName: string; filenamePattern: GlobPattern | { include: GlobPattern; exclude: GlobPattern; }; exclusive?: boolean; };
+			}
 		): Disposable;
 
 		export function registerNotebookKernelProvider(
@@ -553,18 +652,7 @@ declare module 'vscode' {
 			provider: NotebookKernelProvider
 		): Disposable;
 
-		export function registerNotebookKernel(
-			id: string,
-			selectors: GlobPattern[],
-			kernel: NotebookKernel
-		): Disposable;
-
-		export function registerNotebookOutputRenderer(
-			id: string,
-			outputSelector: NotebookOutputSelector,
-			renderer: NotebookOutputRenderer
-		): Disposable;
-
+		export function createNotebookEditorDecorationType(options: NotebookDecorationRenderOptions): NotebookEditorDecorationType;
 		export const onDidOpenNotebookDocument: Event<NotebookDocument>;
 		export const onDidCloseNotebookDocument: Event<NotebookDocument>;
 		export const onDidSaveNotebookDocument: Event<NotebookDocument>;
@@ -574,11 +662,14 @@ declare module 'vscode' {
 		 */
 		export const notebookDocuments: ReadonlyArray<NotebookDocument>;
 
-		export let visibleNotebookEditors: NotebookEditor[];
+		export const visibleNotebookEditors: NotebookEditor[];
 		export const onDidChangeVisibleNotebookEditors: Event<NotebookEditor[]>;
 
-		export let activeNotebookEditor: NotebookEditor | undefined;
+		export const activeNotebookEditor: NotebookEditor | undefined;
 		export const onDidChangeActiveNotebookEditor: Event<NotebookEditor | undefined>;
+		export const onDidChangeNotebookEditorSelection: Event<NotebookEditorSelectionChangeEvent>;
+		export const onDidChangeNotebookEditorVisibleRanges: Event<NotebookEditorVisibleRangesChangeEvent>;
+		export const onDidChangeNotebookDocumentMetadata: Event<NotebookDocumentMetadataChangeEvent>;
 		export const onDidChangeNotebookCells: Event<NotebookCellsChangeEvent>;
 		export const onDidChangeCellOutputs: Event<NotebookCellOutputsChangeEvent>;
 		export const onDidChangeCellLanguage: Event<NotebookCellLanguageChangeEvent>;
@@ -593,6 +684,17 @@ declare module 'vscode' {
 		export function createConcatTextDocument(notebook: NotebookDocument, selector?: DocumentSelector): NotebookConcatTextDocument;
 
 		export const onDidChangeActiveNotebookKernel: Event<{ document: NotebookDocument, kernel: NotebookKernel | undefined }>;
+
+		/**
+		 * Creates a notebook cell status bar [item](#NotebookCellStatusBarItem).
+		 * It will be disposed automatically when the notebook document is closed or the cell is deleted.
+		 *
+		 * @param cell The cell on which this item should be shown.
+		 * @param alignment The alignment of the item.
+		 * @param priority The priority of the item. Higher values mean the item should be shown more to the left.
+		 * @return A new status bar item.
+		 */
+		export function createCellStatusBarItem(cell: NotebookCell, alignment?: NotebookCellStatusBarAlignment, priority?: number): NotebookCellStatusBarItem;
 	}
 
 	//#endregion
